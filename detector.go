@@ -7,7 +7,6 @@ import (
 	"github.com/miekg/dns"
 	"os"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -38,7 +37,7 @@ func main() {
 	} else {
 		fp, err := os.Open(*domainfile)
 		if err != nil {
-			fmt.Printf("open %s failed", *domainfile)
+			fmt.Printf("open %s failed\n", *domainfile)
 			return
 		}
 		br := bufio.NewReader(fp)
@@ -57,7 +56,7 @@ func main() {
 	batch_query(qname, nameserver)
 }
 
-func query_one(nameserver, v string, control chan bool, wg *sync.WaitGroup, cdnD, retryD *[]string) {
+func query_one(nameserver, v string, control chan bool, cdnD, noanswerD, otherD, retryD *[]string) {
 	c := new(dns.Client)
 	c.Net = "udp"
 	c.Timeout = time.Duration(*timeout) * time.Second
@@ -102,29 +101,36 @@ func query_one(nameserver, v string, control chan bool, wg *sync.WaitGroup, cdnD
 			}
 			vv := strings.Split(dnsrr, "\t")
 			result := vv[4]
-			if strings.HasSuffix(result, *suffix) {
+			if strings.HasSuffix(result, dns.Fqdn(*suffix)) {
 				if *verbose >= 1 {
 					fmt.Printf("%s cname domain suffix is %s\n", v, *suffix)
 				}
-				*cdnD = append(*cdnD, v)
+				*cdnD = append(*cdnD, fmt.Sprintf("%-40s %s", v, result))
+			} else {
+				*otherD = append(*otherD, fmt.Sprintf("%-40s %s", v, result))
+			}
+		} else {
+			if len(r.Answer) == 0 {
+				*noanswerD = append(*noanswerD, fmt.Sprintf("%-40s [no answer]", v))
+			} else {
+				*otherD = append(*otherD, fmt.Sprintf("%-40s %s", v, r.Answer[0].String()))
 			}
 		}
 	}
-	wg.Done()
 	<-control
 }
 func batch_query(qname []string, nameserver string) {
-	var wg sync.WaitGroup
 	cdnDomains := make([]string, 0, 1000)
+	noanswerDomains := make([]string, 0, 1000)
+	otherDomains := make([]string, 0, 1000)
 	retryDomains := make([]string, 0, 1000)
 	control := make(chan bool, *batchNum)
+	qnamelist := qname
 	for {
-		for _, v := range qname {
-			wg.Add(1)
-			go query_one(nameserver, v, control, &wg, &cdnDomains, &retryDomains)
+		for _, v := range qnamelist {
+			go query_one(nameserver, v, control, &cdnDomains, &noanswerDomains, &otherDomains, &retryDomains)
 			control <- true
 		}
-		wg.Wait()
 		if *verbose >= 2 {
 			fmt.Printf("!!!!!!%d domains need retry!!!!!!\n", len(retryDomains))
 		}
@@ -133,18 +139,31 @@ func batch_query(qname []string, nameserver string) {
 				fmt.Printf("%s\n", d)
 			}
 		}
-		if len(retryDomains) == 0 {
+		if len(cdnDomains)+len(otherDomains)+len(noanswerDomains) != len(qname) {
+			fmt.Printf("still has domain not end...\n")
+			time.Sleep(time.Second)
+			qnamelist = retryDomains
+			retryDomains = retryDomains[0:0]
+			continue
+		} else {
 			break
 		}
-		qname = retryDomains
-		retryDomains = retryDomains[0:0]
 	}
 	if *verbose >= 1 {
+		fmt.Printf("*****domains no answers as follows******\n")
+		for _, d := range noanswerDomains {
+			fmt.Println(d)
+		}
+		fmt.Printf("*****domains not in cdn %s as follows******\n", *suffix)
+		for _, d := range otherDomains {
+			fmt.Println(d)
+		}
 		fmt.Printf("*****domains in cdn %s as follows******\n", *suffix)
 		for _, d := range cdnDomains {
 			fmt.Println(d)
 		}
 	}
+	fmt.Printf("******total %d domains no answer******\n", len(noanswerDomains))
+	fmt.Printf("******total %d domains not in cdn******\n", len(otherDomains))
 	fmt.Printf("******total %d domains in cdn******\n", len(cdnDomains))
-
 }
