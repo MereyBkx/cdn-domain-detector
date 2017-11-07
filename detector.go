@@ -18,6 +18,7 @@ var (
 	batchNum   = flag.Int("batch", 100, "concurrent number")
 	timeout    = flag.Int("timeout", 10, "timeout ")
 	suffix     = flag.String("suffix", "cn.", "which cdn does this domain used")
+	retry      = flag.Int("retry", 3, "retry times after query failed")
 )
 
 func init() {
@@ -60,7 +61,7 @@ func query_one(nameserver, v string, control chan bool, cdnD, noanswerD, otherD,
 	c := new(dns.Client)
 	c.Net = "udp"
 	c.Timeout = time.Duration(*timeout) * time.Second
-	c.DialTimeout = 5 * time.Second
+	c.DialTimeout = 10 * time.Second
 	c.ReadTimeout = 5 * time.Second
 	c.WriteTimeout = 5 * time.Second
 	m := &dns.Msg{
@@ -82,9 +83,7 @@ func query_one(nameserver, v string, control chan bool, cdnD, noanswerD, otherD,
 		fmt.Println("start query ", v)
 	}
 	if err != nil {
-		if *verbose >= 1 {
-			fmt.Printf("%s error answer %s\n", v, err)
-		}
+		fmt.Printf("%s error reason: %s\n", v, err)
 		*retryD = append(*retryD, v)
 	} else {
 		if *verbose >= 3 {
@@ -126,6 +125,8 @@ func batch_query(qname []string, nameserver string) {
 	retryDomains := make([]string, 0, 1000)
 	control := make(chan bool, *batchNum)
 	qnamelist := qname
+	retryCount := 0
+
 	for {
 		for _, v := range qnamelist {
 			go query_one(nameserver, v, control, &cdnDomains, &noanswerDomains, &otherDomains, &retryDomains)
@@ -139,15 +140,31 @@ func batch_query(qname []string, nameserver string) {
 				fmt.Printf("%s\n", d)
 			}
 		}
-		if len(cdnDomains)+len(otherDomains)+len(noanswerDomains) != len(qname) {
-			fmt.Printf("still has domain not end...\n")
+		if len(cdnDomains)+len(otherDomains)+len(noanswerDomains) < len(qname) {
+			fmt.Printf("still has domain %d ...\n", len(retryDomains))
+			fmt.Printf("no answer domains %d ...\n", len(noanswerDomains))
+			fmt.Printf("other cdn domains %d ...\n", len(otherDomains))
+			fmt.Printf("%s cdn domains %d ...\n", *suffix, len(cdnDomains))
 			time.Sleep(time.Second)
+			for {
+				if len(cdnDomains)+len(otherDomains)+len(noanswerDomains)+len(retryDomains) != len(qname) {
+					fmt.Printf("still has goroutine runing ...\n")
+					time.Sleep(time.Second)
+				} else {
+					break
+				}
+			}
 			qnamelist = retryDomains
 			retryDomains = retryDomains[0:0]
-			continue
+			retryCount++
+			if retryCount > *retry {
+				fmt.Printf("read max retry times, break\n")
+				break
+			}
 		} else {
 			break
 		}
+
 	}
 	if *verbose >= 1 {
 		fmt.Printf("*****domains no answers as follows******\n")
