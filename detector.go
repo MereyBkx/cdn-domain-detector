@@ -4,10 +4,11 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
-	"github.com/miekg/dns"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 var (
@@ -74,7 +75,7 @@ func query_one(nameserver, v string, control chan bool, cdnD, noanswerD, otherD,
 		},
 		Question: make([]dns.Question, 1),
 	}
-	qt := dns.TypeCNAME
+	qt := dns.TypeA
 	qc := uint16(dns.ClassINET)
 	m.Question[0] = dns.Question{Name: dns.Fqdn(v), Qtype: qt, Qclass: qc}
 	m.Id = dns.Id()
@@ -93,7 +94,19 @@ func query_one(nameserver, v string, control chan bool, cdnD, noanswerD, otherD,
 				fmt.Printf("domain %s has not ns record\n", v)
 			}
 		}
-		if len(r.Answer) == 1 {
+		r.Compress = true
+		cnameCount := 0
+		aCount := 0
+		for _, rr := range r.Answer {
+			//fmt.Printf("rr type %s\n", dns.Type(rr.Header().Rrtype).String())
+			if dns.Type(rr.Header().Rrtype).String() == "A" {
+				aCount++
+			} else if dns.Type(rr.Header().Rrtype).String() == "CNAME" {
+				cnameCount++
+			}
+		}
+		fmt.Printf("@@@ %s msg size %d, cname %d, ipv4 %d\n------\n", dns.Fqdn(v), r.Len()+11, cnameCount, aCount)
+		if len(r.Answer) >= 1 {
 			dnsrr := r.Answer[0].String()
 			if *verbose >= 1 {
 				fmt.Println(dnsrr)
